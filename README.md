@@ -1,6 +1,6 @@
 # Minicraft-game-code-unblocked
 # WARNING
-his game is still under active development. Features may change, and bugs or incomplete content are expected. Please be aware that the experience is not yet final, and your feedback will help shape the future of the game!
+This game is still under active development. Features may change, and bugs or incomplete content are expected. Please be aware that the experience is not yet final, and your feedback will help shape the future of the game!
 
 # ABOUT
 
