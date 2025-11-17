@@ -1,1 +1,645 @@
+(() => {
+  if (window.miniCraftFixed) {
+    try { window.miniCraftFixed.destroy(); } catch(e) {}
+  }
+
+  // ---------------- CONFIG ----------------
+  const TILE = 24;
+  const WORLD_W = 1024;  // finite world width in tiles
+  const WORLD_H = 256;   // finite world height in tiles
+
+  const CHUNK_W = 64;
+  const CHUNK_H = 64;
+  const CHUNKS_X = Math.ceil(WORLD_W / CHUNK_W);
+  const CHUNKS_Y = Math.ceil(WORLD_H / CHUNK_H);
+
+  const PHYSICS_HZ = 60;
+  const DT = 1 / PHYSICS_HZ;
+  const MAX_SUBSTEP = TILE * 0.45;
+  const GRAVITY = 1400;
+  const JUMP_V = -420;
+  const WALK_SPEED = 160;
+  const FRICTION = 12;
+  const REACH_TILES = 6.5;
+  const MAX_STACK = 64;
+
+  const BLOCKS = {
+    0: { name:"Air",    color:null,      solid:false, hp:0,   drop:0 },
+    1: { name:"Grass",  color:"#5fb364", solid:true,  hp:40,  drop:1 },
+    2: { name:"Dirt",   color:"#8b5a2b", solid:true,  hp:35,  drop:2 },
+    3: { name:"Stone",  color:"#7d7d7d", solid:true,  hp:95,  drop:3 },
+    4: { name:"Wood",   color:"#a66b2a", solid:true,  hp:60,  drop:4 },
+    5: { name:"Leaves", color:"#7ed957", solid:false, hp:20,  drop:5 }
+  };
+
+  // ---------------- DOM & canvas ----------------
+  const root = document.createElement("div");
+  Object.assign(root.style, {
+    position:"fixed", left:0, top:0, width:"100%", height:"100%",
+    zIndex:2147483647, pointerEvents:"none"
+  });
+  document.body.appendChild(root);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(800, window.innerWidth);
+  canvas.height = Math.max(600, window.innerHeight);
+  Object.assign(canvas.style, { width:"100%", height:"100%", display:"block", pointerEvents:"auto", cursor:"crosshair" });
+  root.appendChild(canvas);
+  const ctx = canvas.getContext("2d", { alpha:false });
+
+  const help = document.createElement("div");
+  help.innerText = "A/D: move • W/Space: jump • Left: mine • Right: place • 1-5: select • Esc: exit";
+  Object.assign(help.style, {
+    position:"absolute", left:"12px", top:"12px", background:"rgba(0,0,0,0.55)", color:"#fff",
+    padding:"8px 10px", borderRadius:"8px", fontFamily:"monospace", pointerEvents:"none"
+  });
+  root.appendChild(help);
+
+  function resize(){ canvas.width = Math.floor(window.innerWidth); canvas.height = Math.floor(window.innerHeight); }
+  window.addEventListener("resize", resize);
+
+  // ---------------- chunk store ----------------
+  const worldChunks = new Map();
+  function chunkKey(cx,cy){ return cx + "," + cy; }
+
+  // ---------------- deterministic helpers ----------------
+  // integer -> pseudo-random value in [0,1] deterministic
+  function hash01(n) {
+    n = (n | 0) + 0x7ed55d16 + (n << 12);
+    n = (n ^ 0xc761c23c) ^ (n >>> 19);
+    n = (n + 0x165667b1) + (n << 5);
+    n = (n + 0xd3a2646c) ^ (n << 9);
+    n = (n + 0xfd7046c5) + (n << 3);
+    n = (n ^ 0xb55a4f09) ^ (n >>> 16);
+    // map to [0,1]
+    return ((n >>> 0) % 1000000) / 1000000;
+  }
+
+  // value noise 1D (deterministic)
+  function valueNoise1D(x, seedBase = 0) {
+    const xi = Math.floor(x);
+    const xf = x - xi;
+    function hash(n){
+      n = (n + seedBase) | 0;
+      n = (n<<13) ^ n;
+      // integer hash to [-1,1]
+      return (1.0 - ((n * (n*n * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.0);
+    }
+    const v0 = hash(xi);
+    const v1 = hash(xi + 1);
+    const t = xf * xf * (3 - 2 * xf);
+    return v0 * (1 - t) + v1 * t;
+  }
+
+  function fbm1D(x, options = {}) {
+    const octaves = options.octaves ?? 4;
+    const lacunarity = options.lacunarity ?? 2.0;
+    const gain = options.gain ?? 0.5;
+    let amplitude = 1.0, freq = 1.0, sum = 0, max = 0;
+    for (let i=0; i<octaves; i++){
+      sum += valueNoise1D(x * freq, i*1234567) * amplitude;
+      max += amplitude;
+      amplitude *= gain;
+      freq *= lacunarity;
+    }
+    return sum / max;
+  }
+
+  // ---------------- terrain parameters ----------------
+  const heightParams = {
+    baseFrac: 0.54,      // midline
+    scale: 0.015,        // smaller -> smoother, broader hills
+    octaves: 5,
+    gain: 0.55,
+    lacunarity: 2.0,
+    amplitudeFrac: 0.14  // vertical amplitude
+  };
+
+  function computeSurfaceBaseAtGx(gx) {
+    if (gx < 0) gx = 0;
+    if (gx >= WORLD_W) gx = WORLD_W - 1;
+    const nx = gx * heightParams.scale;
+    const n = fbm1D(nx, { octaves: heightParams.octaves, gain: heightParams.gain, lacunarity: heightParams.lacunarity });
+    const mid = Math.floor(WORLD_H * heightParams.baseFrac);
+    const amplitudeTiles = Math.max(2, Math.floor(WORLD_H * heightParams.amplitudeFrac));
+    const base = Math.floor(mid + n * amplitudeTiles);
+    return Math.max(2, Math.min(WORLD_H - 6, base));
+  }
+
+  // ---------------- chunk generation ----------------
+  function generateChunk(cx, cy) {
+    const key = chunkKey(cx, cy);
+    if (worldChunks.has(key)) return worldChunks.get(key);
+
+    const chunkGlobalX0 = cx * CHUNK_W;
+    const chunkGlobalY0 = cy * CHUNK_H;
+    const data = new Uint8Array(CHUNK_W * CHUNK_H);
+
+    for (let lx = 0; lx < CHUNK_W; lx++){
+      const gx = chunkGlobalX0 + lx;
+      if (gx < 0 || gx >= WORLD_W) continue;
+      const base = computeSurfaceBaseAtGx(gx);
+
+      for (let ly = 0; ly < CHUNK_H; ly++){
+        const gy = chunkGlobalY0 + ly;
+        let id = 0;
+        if (gy < 0 || gy >= WORLD_H) {
+          id = 0;
+        } else if (gy < base) {
+          id = 0;
+        } else if (gy === base) {
+          id = 1; // grass
+        } else if (gy < base + 3) {
+          id = 2; // dirt
+        } else {
+          id = 3; // stone
+        }
+        data[ly * CHUNK_W + lx] = id;
+      }
+
+      // ---------- deterministic tree placement (fixed density & spacing) ----------
+      // tree noise value in [0,1]
+      const treeNoise = (fbm1D(gx * heightParams.scale + 2000, { octaves:3, gain:0.6 }) + 1) * 0.5;
+      // additional deterministic "random" per-column to thin out placement
+      const thinRand = hash01(gx * 137 + 7919); // deterministic pseudo-random [0,1)
+      // conditions: high noise, only every 4th column (spacing), and thinRand < chance
+      const TREE_NOISE_THRESHOLD = 0.95; // high threshold -> sparse
+      const TREE_COLUMN_SPACING = 4;      // only attempt on columns where gx % spacing === 0
+      const TREE_CHANCE = 0.25;           // fraction of eligible columns to actually place a tree
+
+      if (treeNoise > TREE_NOISE_THRESHOLD && (gx % TREE_COLUMN_SPACING) === 0 && thinRand < TREE_CHANCE) {
+        // ensure base has sufficient space (not too near top or bottom)
+        if (base >= 4 && base < WORLD_H - 8) {
+          const trunkHeight = 2 + ((gx * 7 + 3) % 2); // deterministic 2 or 3
+          for (let t = 0; t < trunkHeight; t++){
+            const ty = base - 1 - t;
+            const localY = ty - chunkGlobalY0;
+            if (localY >= 0 && localY < CHUNK_H) {
+              data[localY * CHUNK_W + lx] = 4;
+            } else {
+              // If trunk extends outside this chunk, write to that chunk later when generated;
+              // we don't touch other chunks here for safety.
+            }
+          }
+          const leafY = base - 1 - trunkHeight;
+          // narrower leaf blob (3x2) to avoid overlap
+          for (let ddx = -1; ddx <= 1; ddx++){
+            for (let ddy = -1; ddy <= 0; ddy++){
+              const wx = gx + ddx, wy = leafY + ddy;
+              if (wx < chunkGlobalX0 || wx >= chunkGlobalX0 + CHUNK_W) continue;
+              if (wy < chunkGlobalY0 || wy >= chunkGlobalY0 + CHUNK_H) continue;
+              const lx2 = wx - chunkGlobalX0, ly2 = wy - chunkGlobalY0;
+              const off = ly2 * CHUNK_W + lx2;
+              if (data[off] === 0) data[off] = 5;
+            }
+          }
+        }
+      }
+      // ---------- end tree placement ----------
+    }
+
+    worldChunks.set(key, data);
+    return data;
+  }
+
+  function getChunkForTile(tx, ty, createIfMissing = true) {
+    if (tx < 0 || ty < 0 || tx >= WORLD_W || ty >= WORLD_H) return null;
+    const cx = Math.floor(tx / CHUNK_W);
+    const cy = Math.floor(ty / CHUNK_H);
+    const key = chunkKey(cx, cy);
+    if (!worldChunks.has(key) && createIfMissing) generateChunk(cx, cy);
+    return { cx, cy, data: worldChunks.get(key) };
+  }
+
+  function getBlockAt(tx, ty) {
+    if (tx < 0 || ty < 0 || tx >= WORLD_W || ty >= WORLD_H) return 0;
+    const ch = getChunkForTile(tx, ty, false);
+    if (!ch || !ch.data) {
+      // generate chunk on demand
+      const cx = Math.floor(tx / CHUNK_W);
+      const cy = Math.floor(ty / CHUNK_H);
+      generateChunk(cx, cy);
+      return getBlockAt(tx, ty);
+    }
+    const lx = tx - ch.cx * CHUNK_W;
+    const ly = ty - ch.cy * CHUNK_H;
+    return ch.data[ly * CHUNK_W + lx];
+  }
+
+  function setBlockAt(tx, ty, id) {
+    if (tx < 0 || ty < 0 || tx >= WORLD_W || ty >= WORLD_H) return;
+    const ch = getChunkForTile(tx, ty, true);
+    if (!ch || !ch.data) return;
+    const lx = tx - ch.cx * CHUNK_W;
+    const ly = ty - ch.cy * CHUNK_H;
+    ch.data[ly * CHUNK_W + lx] = id;
+  }
+
+  // ---------------- inventory & player ----------------
+  const player = {
+    x: 0, y: 0,
+    w: TILE * 0.72, h: TILE * 1.6,
+    vx: 0, vy: 0, onGround: false,
+    selected: 1
+  };
+
+  let inventory = {};
+  for (const id in BLOCKS) inventory[id] = [];
+  inventory[1].push(8);
+
+  function addToInventory(blockId, amount = 1) {
+    if (!inventory[blockId]) inventory[blockId] = [];
+    let remaining = amount;
+    const stacks = inventory[blockId];
+    for (let i=0; i<stacks.length && remaining>0; i++){
+      const space = MAX_STACK - stacks[i];
+      const add = Math.min(space, remaining);
+      stacks[i] += add;
+      remaining -= add;
+    }
+    while (remaining > 0) {
+      stacks.push(Math.min(MAX_STACK, remaining));
+      remaining -= MAX_STACK;
+    }
+  }
+
+  function removeFromInventory(blockId, amount = 1) {
+    if (!inventory[blockId]) return 0;
+    let remaining = amount;
+    const stacks = inventory[blockId];
+    for (let i=0; i<stacks.length && remaining>0; i++){
+      const take = Math.min(stacks[i], remaining);
+      stacks[i] -= take;
+      remaining -= take;
+    }
+    inventory[blockId] = stacks.filter(s => s > 0);
+    return amount - remaining;
+  }
+
+  function totalCount(blockId) {
+    const stacks = inventory[blockId] || [];
+    return stacks.reduce((a,b)=>a+b, 0);
+  }
+
+  // ---------------- input & helpers ----------------
+  const mining = { bx:-1, by:-1, progress:0, toolPower:40 };
+  const keys = {};
+  const mouse = { x:0, y:0, left:false, right:false, lastRight:false };
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") destroy();
+    keys[e.key.toLowerCase()] = true;
+    if (e.key >= '1' && e.key <= '9') player.selected = Math.min(5, Number(e.key));
+  });
+  window.addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
+
+  canvas.addEventListener("mousemove", (e) => {
+    const r = canvas.getBoundingClientRect();
+    mouse.x = e.clientX - r.left;
+    mouse.y = e.clientY - r.top;
+  });
+  canvas.addEventListener("mousedown", (e) => {
+    if (e.button === 0) mouse.left = true;
+    if (e.button === 2) mouse.right = true;
+  });
+  window.addEventListener("mouseup", (e) => {
+    if (e.button === 0) mouse.left = false;
+    if (e.button === 2) mouse.right = false;
+  });
+  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  function aabbOverlap(ax,ay,aw,ah,bx,by,bw,bh){
+    return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+  }
+
+  // --------------- spawn player on surface ---------------
+  (function placePlayerOnSurface(){
+    const spawnGx = Math.floor(WORLD_W / 2);
+    // pre-generate a few chunks around spawn so initial view has no pop-in
+    const spawnCx = Math.floor(spawnGx / CHUNK_W);
+    const spawnCy = Math.floor((WORLD_H/2) / CHUNK_H);
+    // generate a small 3x3 chunk area around spawn
+    for (let dx=-1; dx<=1; dx++){
+      for (let dy=-1; dy<=1; dy++){
+        const cx = spawnCx + dx, cy = spawnCy + dy;
+        if (cx >= 0 && cy >= 0 && cx < CHUNKS_X && cy < CHUNKS_Y) generateChunk(cx, cy);
+      }
+    }
+    const base = computeSurfaceBaseAtGx(spawnGx);
+    player.x = (spawnGx + 0.5) * TILE;
+    player.y = base * TILE - player.h - 0.001;
+    player.x = Math.max(player.w/2, Math.min(player.x, WORLD_W * TILE - player.w/2));
+    player.y = Math.max(0, Math.min(player.y, WORLD_H * TILE - player.h - 1));
+  })();
+
+  // -------------- physics & logic --------------
+  let accumulator = 0;
+  let lastFrame = performance.now();
+
+  function physicsStep(dt) {
+    const left  = keys['a']  || keys['arrowleft'];
+    const right = keys['d']  || keys['arrowright'];
+    const jump  = keys['w']  || keys[' '] || keys['arrowup'];
+
+    let targetVx = 0;
+    if (left) targetVx = -WALK_SPEED;
+    else if (right) targetVx = WALK_SPEED;
+    const alpha = Math.min(1, dt * 12);
+    player.vx += (targetVx - player.vx) * alpha;
+    if (!left && !right) player.vx *= Math.max(0, 1 - FRICTION * dt);
+
+    if (jump && player.onGround) { player.vy = JUMP_V; player.onGround = false; }
+    player.vy += GRAVITY * dt;
+
+    let moveX = player.vx * dt;
+    let moveY = player.vy * dt;
+    const dist = Math.hypot(moveX, moveY);
+    const micro = Math.max(1, Math.ceil(dist / MAX_SUBSTEP));
+
+    for (let s=0; s<micro; s++){
+      const sx = moveX / micro;
+      const sy = moveY / micro;
+
+      player.x += sx;
+      const overlX = tilesOverlapping(player.x, player.y, player.w, player.h);
+      for (const t of overlX){
+        if (t.id && BLOCKS[t.id].solid){
+          const box = tileRect(t.tx, t.ty);
+          if (aabbOverlap(player.x, player.y, player.w, player.h, box.x, box.y, box.w, box.h)){
+            if (sx > 0) player.x = box.x - player.w - 0.001;
+            else if (sx < 0) player.x = box.x + box.w + 0.001;
+            player.vx = 0;
+            break;
+          }
+        }
+      }
+
+      player.y += sy;
+      const overlY = tilesOverlapping(player.x, player.y, player.w, player.h);
+      player.onGround = false;
+      for (const t of overlY){
+        if (t.id && BLOCKS[t.id].solid){
+          const box = tileRect(t.tx, t.ty);
+          if (aabbOverlap(player.x, player.y, player.w, player.h, box.x, box.y, box.w, box.h)){
+            if (sy > 0){
+              player.y = box.y - player.h - 0.001;
+              player.vy = 0;
+              player.onGround = true;
+            } else if (sy < 0){
+              player.y = box.y + box.h + 0.001;
+              player.vy = 0;
+            }
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  function gameLogicStep(dt) {
+    const cam = getCamera();
+    const worldX = cam.x + mouse.x;
+    const worldY = cam.y + mouse.y;
+    const mbx = Math.floor(worldX / TILE);
+    const mby = Math.floor(worldY / TILE);
+
+    const pcx = player.x + player.w/2;
+    const pcy = player.y + player.h/2;
+    const distTiles = Math.hypot((mbx+0.5)*TILE - pcx, (mby+0.5)*TILE - pcy) / TILE;
+    const inReach = distTiles <= REACH_TILES;
+
+    // mining
+    if (mouse.left && inReach && mbx >= 0 && mby >= 0 && mbx < WORLD_W && mby < WORLD_H && getBlockAt(mbx,mby) !== 0){
+      const id = getBlockAt(mbx,mby);
+      const hp = BLOCKS[id].hp;
+      if (mining.bx !== mbx || mining.by !== mby){
+        mining.bx = mbx; mining.by = mby; mining.progress = 0;
+      } else {
+        mining.progress += mining.toolPower * dt;
+        if (mining.progress >= hp){
+          const drop = BLOCKS[id].drop || id;
+          addToInventory(drop, 1);
+          setBlockAt(mbx,mby, 0);
+          mining.bx = mining.by = -1;
+          mining.progress = 0;
+        }
+      }
+    } else {
+      if (!mouse.left) mining.progress = 0;
+      if (!mouse.left) mining.bx = mining.by = -1;
+    }
+
+    // placing
+    if (mouse.right && !mouse.lastRight){
+      if (inReach && mbx >= 0 && mby >= 0 && mbx < WORLD_W && mby < WORLD_H && getBlockAt(mbx,mby) === 0){
+        const tilePx = mbx*TILE, tilePy = mby*TILE;
+        if (!aabbOverlap(player.x, player.y, player.w, player.h, tilePx, tilePy, TILE, TILE)){
+          const selId = player.selected;
+          if (totalCount(selId) > 0){
+            setBlockAt(mbx,mby, selId);
+            removeFromInventory(selId, 1);
+          }
+        }
+      }
+    }
+    mouse.lastRight = mouse.right;
+  }
+
+  // ---------------- tile helpers ----------------
+  function tileAt(tx,ty){ if (tx < 0 || ty < 0 || tx >= WORLD_W || ty >= WORLD_H) return 0; return getBlockAt(tx,ty); }
+  function isSolidTile(tx,ty){ const id = tileAt(tx,ty); return id && BLOCKS[id].solid; }
+  function tileRect(tx,ty){ return { x: tx*TILE, y: ty*TILE, w: TILE, h: TILE }; }
+  function tilesOverlapping(px,py,pw,ph){
+    const x1 = Math.floor(px / TILE), y1 = Math.floor(py / TILE);
+    const x2 = Math.floor((px + pw - 0.0001)/TILE);
+    const y2 = Math.floor((py + ph - 0.0001)/TILE);
+    const out = [];
+    for (let tx = x1; tx <= x2; tx++){
+      for (let ty = y1; ty <= y2; ty++){
+        if (tx < 0 || ty < 0 || tx >= WORLD_W || ty >= WORLD_H) continue;
+        out.push({ tx, ty, id: tileAt(tx,ty) });
+      }
+    }
+    return out;
+  }
+
+  // ---------------- rendering ----------------
+  function roundRect(ctx,x,y,w,h,r,fill,stroke){
+    if(w<2*r) r=w/2; if(h<2*r) r=h/2;
+    ctx.beginPath();
+    ctx.moveTo(x+r,y);
+    ctx.arcTo(x+w,y,x+w,y+h,r);
+    ctx.arcTo(x+w,y+h,x,y+h,r);
+    ctx.arcTo(x,y+h,x,y,r);
+    ctx.arcTo(x,y,x+w,y,r);
+    ctx.closePath();
+    if(fill) ctx.fill();
+    if(stroke) ctx.stroke();
+  }
+
+  function getCamera(){
+    const cx = Math.round(player.x + player.w/2 - canvas.width/2);
+    const cy = Math.round(player.y + player.h/2 - canvas.height/2);
+    const maxX = WORLD_W * TILE - canvas.width;
+    const maxY = WORLD_H * TILE - canvas.height;
+    return { x: Math.max(0, Math.min(maxX, cx)), y: Math.max(0, Math.min(maxY, cy)) };
+  }
+
+  function render(){
+    const grad = ctx.createLinearGradient(0,0,0,canvas.height);
+    grad.addColorStop(0,"#9fd3ff"); grad.addColorStop(1,"#dfeefb");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    const cam = getCamera();
+    const startX = Math.floor(cam.x / TILE) - 1;
+    const endX   = Math.ceil((cam.x + canvas.width) / TILE) + 1;
+    const startY = Math.floor(cam.y / TILE) - 1;
+    const endY   = Math.ceil((cam.y + canvas.height) / TILE) + 1;
+
+    for (let ty = startY; ty <= endY; ty++){
+      for (let tx = startX; tx <= endX; tx++){
+        if (tx < 0 || ty < 0 || tx >= WORLD_W || ty >= WORLD_H) continue;
+        const id = tileAt(tx, ty);
+        if (id === 0) continue;
+        const bx = tx * TILE - cam.x, by = ty * TILE - cam.y;
+        ctx.fillStyle = BLOCKS[id].color || "#fff";
+        ctx.fillRect(Math.floor(bx)+0.5, Math.floor(by)+0.5, TILE-1, TILE-1);
+        ctx.strokeStyle = "rgba(0,0,0,0.06)";
+        ctx.strokeRect(Math.floor(bx)+0.5, Math.floor(by)+0.5, TILE-1, TILE-1);
+      }
+    }
+
+    // player
+    const px = player.x - cam.x, py = player.y - cam.y;
+    ctx.fillStyle = "#ffdb8a";
+    ctx.fillRect(px, py, player.w, player.h);
+    ctx.fillStyle = "rgba(0,0,0,0.12)";
+    ctx.fillRect(px+4, py+player.h-6, player.w-8, 6);
+
+    // hovered tile
+    const worldX = cam.x + mouse.x, worldY = cam.y + mouse.y;
+    const mbx = Math.floor(worldX / TILE), mby = Math.floor(worldY / TILE);
+    const pcx2 = player.x + player.w/2, pcy2 = player.y + player.h/2;
+    const distT = Math.hypot((mbx+0.5)*TILE - pcx2, (mby+0.5)*TILE - pcy2) / TILE;
+    const reach = distT <= REACH_TILES && mbx >= 0 && mby >= 0 && mbx < WORLD_W && mby < WORLD_H;
+    if (mbx >= 0 && mby >= 0 && mbx < WORLD_W && mby < WORLD_H){
+      const tx = mbx * TILE - cam.x, ty = mby * TILE - cam.y;
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = reach ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.25)";
+      ctx.strokeRect(tx+1, ty+1, TILE-2, TILE-2);
+    }
+
+    // mining progress
+    if (mining.bx >= 0 && mining.by >= 0){
+      const tx = mining.bx * TILE - cam.x, ty = mining.by * TILE - cam.y;
+      const id = tileAt(mining.bx, mining.by);
+      const hp = (BLOCKS[id] && BLOCKS[id].hp) || 1;
+      const frac = Math.min(1, mining.progress / Math.max(1, hp));
+      ctx.fillStyle = "rgba(0,0,0,0.35)";
+      ctx.fillRect(tx, ty + TILE - 4, TILE, 4);
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.fillRect(tx, ty + TILE - 4, TILE * frac, 4);
+    }
+
+    // inventory UI (only owned)
+    const visibleIds = Object.keys(inventory).map(Number).filter(id => id !== 0 && (inventory[id] && inventory[id].length > 0)).sort((a,b)=>a-b);
+    const slotCount = Math.max(visibleIds.length, 1);
+    const slotSize = TILE;
+    const padding = 8;
+    const spacing = 6;
+    const barW = Math.max(220, padding*2 + slotCount*slotSize + (slotCount-1)*spacing);
+    const barH = slotSize + padding*2;
+    const bx0 = Math.round((canvas.width - barW)/2), by0 = canvas.height - barH - 18;
+
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    roundRect(ctx, bx0, by0, barW, barH, 8, true, false);
+
+    for (let i=0; i<visibleIds.length; i++){
+      const id = visibleIds[i];
+      const sx = bx0 + padding + i*(slotSize + spacing);
+      const sy = by0 + padding;
+      ctx.fillStyle = BLOCKS[id].color || "#333";
+      ctx.fillRect(sx, sy, slotSize, slotSize);
+      ctx.strokeStyle = (player.selected === id) ? "#fff" : "rgba(0,0,0,0.2)";
+      ctx.lineWidth = (player.selected === id) ? 3 : 1;
+      ctx.strokeRect(sx - ((player.selected === id)?3:0), sy - ((player.selected === id)?3:0), slotSize + ((player.selected === id)?6:0), slotSize + ((player.selected === id)?6:0));
+
+      const mx = mouse.x, my = mouse.y;
+      const inside = mx >= sx && mx <= sx + slotSize && my >= sy && my <= sy + slotSize;
+      ctx.fillStyle = "#fff"; ctx.font = "12px monospace";
+      const total = totalCount(id);
+      if (inside) {
+        const name = BLOCKS[id].name;
+        const textW = ctx.measureText(name).width;
+        const tx = sx + slotSize/2 - textW/2;
+        const ty = sy - 14;
+        ctx.fillStyle = "rgba(0,0,0,0.7)";
+        roundRect(ctx, tx - 4, ty - 12, textW + 8, 16, 6, true, false);
+        ctx.fillStyle = "#fff";
+        ctx.fillText(name, tx, ty);
+      } else {
+        ctx.fillText(`x${total}`, sx + slotSize - 22, sy + slotSize - 6);
+      }
+    }
+
+    // debug info
+    ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(10, canvas.height - 66, 170, 56);
+    ctx.fillStyle = "#fff"; ctx.font = "12px monospace";
+    ctx.fillText(`Pos: ${(player.x/TILE).toFixed(2)}, ${(player.y/TILE).toFixed(2)}`, 18, canvas.height - 44);
+    ctx.fillText(`Vel: ${(player.vx).toFixed(0)} , ${(player.vy).toFixed(0)}`, 18, canvas.height - 26);
+  }
+
+  // --------------- main loop ---------------
+  let running = true;
+  let frameCount = 0, fpsLast = performance.now(), fps = 0;
+  function frame(now){
+    if (!running) return;
+    requestAnimationFrame(frame);
+    let delta = (now - lastFrame)/1000;
+    if (delta > 0.25) delta = 0.25;
+    lastFrame = now;
+    accumulator += delta;
+    while (accumulator >= DT){
+      physicsStep(DT);
+      gameLogicStep(DT);
+      accumulator -= DT;
+    }
+    render();
+    frameCount++;
+    if (now - fpsLast >= 1000){
+      fps = frameCount; frameCount = 0; fpsLast = now;
+    }
+  }
+  requestAnimationFrame(frame);
+
+  // --------------- cleanup & api ---------------
+  function destroy(){
+    running = false;
+    window.removeEventListener("resize", resize);
+    window.removeEventListener("keydown", () => {});
+    window.removeEventListener("keyup", () => {});
+    canvas.remove();
+    root.remove();
+    try{ delete window.miniCraftFixed; } catch(e){}
+    console.log("Mini-craft stopped.");
+  }
+
+  window.miniCraftFixed = {
+    destroy,
+    getBlock: getBlockAt,
+    setBlock: setBlockAt,
+    inventory,
+    BLOCKS,
+    totalCount,
+    _worldChunks: worldChunks,
+    _config: { WORLD_W, WORLD_H, CHUNK_W, CHUNK_H }
+  };
+
+  // optional small debug helpers
+  window._mc = { computeSurfaceBaseAtGx, generateChunk, getChunkForTile, getBlockAt, setBlockAt };
+
+  console.log("Mini-craft (chunked finite world with balanced trees) running. Esc to exit.");
+})();
+
 
