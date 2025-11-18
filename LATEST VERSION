@@ -1,4 +1,4 @@
-// Mini-craft with natural bending crouch animation and smooth terrain
+// Mini-craft with ores, natural bending crouch animation and smooth terrain
 // Paste into browser console to run
 (() => {
   if (window.miniCraftFixed) {
@@ -12,7 +12,10 @@
   const PHYSICS_HZ = 60;
   const DT = 1 / PHYSICS_HZ;
   const MAX_SUBSTEP = TILE * 0.45;
-  const GRAVITY = 1400, JUMP_V = -320, WALK_SPEED = 160, FRICTION = 12;
+  const GRAVITY = 1400;
+  const JUMP_V = -320;
+  const WALK_SPEED = 160;
+  const FRICTION = 12;
   const REACH_TILES = 6.5;
   const MAX_STACK = 64;
 
@@ -33,8 +36,10 @@
   const CYCLE_MS = DAY_MS + NIGHT_MS;
   const worldStartTime = Date.now() - Math.floor(Math.random() * CYCLE_MS);
 
-  let currentZoom = 1.0, targetZoom = 1.0;
-  const ZOOM_MIN = 0.5, ZOOM_MAX = 3.0;
+  let currentZoom = 1.0;
+  let targetZoom = 1.0;
+  const ZOOM_MIN = 0.5;
+  const ZOOM_MAX = 3.0;
   const devicePixelRatio_ = Math.max(1, window.devicePixelRatio || 1);
 
   // ---------- Blocks ----------
@@ -45,6 +50,11 @@
     3: { name:"Stone", color:"#6d6d6d", solid:true, hp:95, drop:3 },
     4: { name:"Oak Wood", color:"#8d5a33", solid:true, hp:60, drop:4 },
     5: { name:"Oak Leaves", color:"#3f7a3a", solid:false, hp:20, drop:5 },
+    6: { name:"Coal Ore", color:"#3a3a3a", solid:true, hp:100, drop:6 },
+    7: { name:"Iron Ore", color:"#c4a57b", solid:true, hp:120, drop:7 },
+    8: { name:"Copper Ore", color:"#b87333", solid:true, hp:105, drop:8 },
+    9: { name:"Emerald Ore", color:"#50c878", solid:true, hp:140, drop:9 },
+    10: { name:"Diamond Ore", color:"#4dd9e8", solid:true, hp:150, drop:10 },
     11:{ name:"Rock", color:"#8a8f94", solid:true, hp:110, drop:11 }
   };
 
@@ -269,6 +279,15 @@
     settingsScreen.style.display = "none";
     titleScreen.style.display = "flex";
     rebindingKey = null;
+    // Reset any buttons that might still be in "PRESS KEY..." state
+    const buttons = settingsScreen.querySelectorAll("button");
+    buttons.forEach(btn => {
+      if (btn.dataset.bindKey) {
+        const bindKey = btn.dataset.bindKey;
+        btn.textContent = keybinds[bindKey].toUpperCase();
+        btn.style.background = "rgba(74, 144, 226, 0.9)";
+      }
+    });
   });
 
   settingsScreen.appendChild(backButton);
@@ -346,14 +365,14 @@
       }
     }
     
-    // Generate trees
+    generateOreVeins();
+    
     const numTrees = 40 + Math.floor(Math.random() * 30);
     const treePositions = [];
     
     for (let t = 0; t < numTrees; t++) {
       const tx = 10 + Math.floor(Math.random() * (WORLD_W - 20));
       
-      // Check if too close to existing trees (minimum 8 blocks apart)
       let tooClose = false;
       for (const pos of treePositions) {
         if (Math.abs(pos - tx) < 8) {
@@ -368,13 +387,11 @@
         if (map[idx(tx, y)] !== 0) { surfaceY = y; break; }
       }
       
-      // Check if there's enough space (no blocks above for 6 tiles)
       let canPlaceTree = true;
       for (let cy = surfaceY - 6; cy < surfaceY; cy++) {
         if (cy < 0 || map[idx(tx, cy)] !== 0) { canPlaceTree = false; break; }
       }
       
-      // Also check the blocks immediately around the trunk position
       for (let dx = -2; dx <= 2; dx++) {
         const checkX = tx + dx;
         if (checkX >= 0 && checkX < WORLD_W) {
@@ -390,17 +407,14 @@
       
       if (!canPlaceTree) continue;
       
-      // Add to tree positions
       treePositions.push(tx);
       
-      // Tree trunk (4-5 blocks tall)
       const trunkHeight = 4 + Math.floor(Math.random() * 2);
       for (let ty = 0; ty < trunkHeight; ty++) {
         const y = surfaceY - 1 - ty;
         if (y >= 0) map[idx(tx, y)] = 4;
       }
       
-      // Tree leaves (crown shape)
       const crownY = surfaceY - trunkHeight;
       const crownRadius = 2;
       
@@ -408,7 +422,8 @@
         for (let dx = -crownRadius; dx <= crownRadius; dx++) {
           const dist = Math.abs(dx) + Math.abs(dy);
           if (dist <= crownRadius && dist > 0) {
-            const lx = tx + dx, ly = crownY + dy;
+            const lx = tx + dx;
+            const ly = crownY + dy;
             if (lx >= 0 && lx < WORLD_W && ly >= 0 && ly < WORLD_H) {
               if (map[idx(lx, ly)] === 0) map[idx(lx, ly)] = 5;
             }
@@ -416,8 +431,62 @@
         }
       }
       
-      // Top leaf
       if (crownY - 1 >= 0) map[idx(tx, crownY - 1)] = 5;
+    }
+  }
+
+  function generateOreVeins() {
+    const surfaceLevel = Math.floor(WORLD_H * 0.52);
+    
+    const oreConfigs = [
+      [8, 5, 40, 80, 5],
+      [6, 8, 50, 100, 8],
+      [7, 15, 60, 70, 5],
+      [9, 40, 80, 25, 2],
+      [10, 50, 90, 20, 4]
+    ];
+    
+    for (const [oreId, minDepth, maxDepth, veinCount, maxVeinSize] of oreConfigs) {
+      for (let v = 0; v < veinCount; v++) {
+        const x = Math.floor(Math.random() * WORLD_W);
+        const y = surfaceLevel + minDepth + Math.floor(Math.random() * (maxDepth - minDepth));
+        
+        if (y >= WORLD_H) continue;
+        if (map[idx(x, y)] !== 3) continue;
+        
+        const veinSize = 1 + Math.floor(Math.random() * maxVeinSize);
+        placeOreVein(x, y, oreId, veinSize);
+      }
+    }
+  }
+
+  function placeOreVein(startX, startY, oreId, size) {
+    const placed = new Set();
+    const queue = [[startX, startY]];
+    placed.add(`${startX},${startY}`);
+    
+    let count = 0;
+    
+    while (queue.length > 0 && count < size) {
+      const [x, y] = queue.shift();
+      
+      if (x < 0 || x >= WORLD_W || y < 0 || y >= WORLD_H) continue;
+      if (map[idx(x, y)] !== 3) continue;
+      
+      map[idx(x, y)] = oreId;
+      count++;
+      
+      const directions = [
+        [x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]
+      ];
+      
+      for (const [nx, ny] of directions) {
+        const key = `${nx},${ny}`;
+        if (!placed.has(key) && Math.random() < 0.6) {
+          placed.add(key);
+          queue.push([nx, ny]);
+        }
+      }
     }
   }
 
@@ -441,7 +510,9 @@
     let ci = 0xffffff;
     try { ci = parseInt(base.slice(1), 16); } catch(e) {}
     
-    let r = (ci>>16)&0xff, gg = (ci>>8)&0xff, b = ci&0xff;
+    let r = (ci>>16)&0xff;
+    let gg = (ci>>8)&0xff;
+    let b = ci&0xff;
     const jitter = (iHash(id*7919+37)%21)-10;
     r = Math.max(0, Math.min(255, r+jitter));
     gg = Math.max(0, Math.min(255, gg+jitter));
@@ -450,32 +521,72 @@
     g.fillStyle = `rgb(${r},${gg},${b})`;
     g.fillRect(0, 0, size, size);
 
-    const speck = 18, alpha = 0.06;
-    for (let i=0; i<speck; i++) {
-      const rx = Math.floor(iHash(id*97 + i*131) % size);
-      const ry = Math.floor(iHash(id*193 + i*71) % size);
-      const rw = 1 + (iHash(id*19 + i*29) % 2);
-      const rh = 1 + (iHash(id*23 + i*31) % 2);
-      const a = alpha + ((iHash(id*47 + i*53) % 20)/1000);
-      g.fillStyle = `rgba(0,0,0,${a})`;
-      g.fillRect(rx, ry, rw, rh);
+    if (id === 6) {
+      for (let i = 0; i < 8; i++) {
+        const rx = Math.floor(iHash(id*97 + i*131) % size);
+        const ry = Math.floor(iHash(id*193 + i*71) % size);
+        const rw = 2 + (iHash(id*19 + i*29) % 3);
+        g.fillStyle = `rgba(0,0,0,0.7)`;
+        g.fillRect(rx, ry, rw, rw);
+      }
+    } else if (id === 7) {
+      for (let i = 0; i < 6; i++) {
+        const rx = Math.floor(iHash(id*97 + i*131) % size);
+        const ry = Math.floor(iHash(id*193 + i*71) % size);
+        const rw = 2 + (iHash(id*19 + i*29) % 3);
+        g.fillStyle = `rgba(139,90,43,0.6)`;
+        g.fillRect(rx, ry, rw, rw);
+      }
+    } else if (id === 8) {
+      for (let i = 0; i < 7; i++) {
+        const rx = Math.floor(iHash(id*97 + i*131) % size);
+        const ry = Math.floor(iHash(id*193 + i*71) % size);
+        const rw = 2 + (iHash(id*19 + i*29) % 3);
+        g.fillStyle = `rgba(150,70,20,0.6)`;
+        g.fillRect(rx, ry, rw, rw);
+      }
+    } else if (id === 9) {
+      for (let i = 0; i < 5; i++) {
+        const rx = Math.floor(iHash(id*97 + i*131) % size);
+        const ry = Math.floor(iHash(id*193 + i*71) % size);
+        const rw = 2 + (iHash(id*19 + i*29) % 2);
+        g.fillStyle = `rgba(100,255,150,0.7)`;
+        g.fillRect(rx, ry, rw, rw);
+      }
+    } else if (id === 10) {
+      for (let i = 0; i < 6; i++) {
+        const rx = Math.floor(iHash(id*97 + i*131) % size);
+        const ry = Math.floor(iHash(id*193 + i*71) % size);
+        const rw = 1 + (iHash(id*19 + i*29) % 2);
+        g.fillStyle = `rgba(180,255,255,0.8)`;
+        g.fillRect(rx, ry, rw, rw);
+      }
+      for (let i = 0; i < 3; i++) {
+        const rx = Math.floor(iHash(id*47 + i*53) % size);
+        const ry = Math.floor(iHash(id*59 + i*67) % size);
+        g.fillStyle = `rgba(255,255,255,0.9)`;
+        g.fillRect(rx, ry, 1, 1);
+      }
+    }
+
+    if (id !== 6 && id !== 7 && id !== 8 && id !== 9 && id !== 10) {
+      const speck = 18;
+      const alpha = 0.06;
+      for (let i=0; i<speck; i++) {
+        const rx = Math.floor(iHash(id*97 + i*131) % size);
+        const ry = Math.floor(iHash(id*193 + i*71) % size);
+        const rw = 1 + (iHash(id*19 + i*29) % 2);
+        const rh = 1 + (iHash(id*23 + i*31) % 2);
+        const a = alpha + ((iHash(id*47 + i*53) % 20)/1000);
+        g.fillStyle = `rgba(0,0,0,${a})`;
+        g.fillRect(rx, ry, rw, rh);
+      }
     }
 
     if (id === 4) {
       g.fillStyle = "rgba(0,0,0,0.06)";
       for (let y=2; y<size-2; y+=4) {
         g.fillRect(2, y + ((iHash(y+id)%2)), size-4, 1);
-      }
-    }
-    
-    if (id === 5) {
-      for (let sx=0; sx<size; sx+=4) {
-        for (let sy=0; sy<size; sy+=4) {
-          if (iHash(sx*97+sy*31+id)%100 < 62) {
-            g.fillStyle = "rgba(0,0,0,0.06)";
-            g.fillRect(sx+(iHash(sx+sy+id)%2), sy+(iHash(sx*3+sy*7+id)%2), 2, 2);
-          }
-        }
       }
     }
     
@@ -572,11 +683,14 @@
     normalHeight: TILE*2.0, crouchHeight: TILE*1.5
   };
 
-  // ---------- Player sprite with arms OUTSIDE body ----------
+  // ---------- Player sprite ----------
   function drawPlayerSprite(ctx, px, py, pw, ph) {
-    const skinColor = "#ffd4a3", skinShadow = "#e0b88a";
-    const shirtColor = "#4a90e2", shirtShadow = "#3a7bc8";
-    const pantsColor = "#2c5aa0", pantsShadow = "#1e4080";
+    const skinColor = "#ffd4a3";
+    const skinShadow = "#e0b88a";
+    const shirtColor = "#4a90e2";
+    const shirtShadow = "#3a7bc8";
+    const pantsColor = "#2c5aa0";
+    const pantsShadow = "#1e4080";
     const shoeColor = "#2d2d2d";
     
     const crouchAmt = player.crouchProgress;
@@ -584,10 +698,14 @@
     const bendForwardX = Math.sin(bendAngle) * ph * 0.3 * (player.facingRight ? 1 : -1);
     const bendDownY = (1 - Math.cos(bendAngle)) * ph * 0.15;
     
-    const headSize = ph * 0.35, bodyHeight = ph * 0.38;
-    const bodyWidth = pw * 0.5, legHeight = ph * 0.35;
+    const headSize = ph * 0.35;
+    const bodyHeight = ph * 0.38;
+    const bodyWidth = pw * 0.5;
+    const legHeight = ph * 0.35;
     
-    let armSwing = 0, legSwing = 0, bodyBob = 0;
+    let armSwing = 0;
+    let legSwing = 0;
+    let bodyBob = 0;
     
     if (player.onGround && Math.abs(player.vx) > 10 && !player.crouching) {
       const walkCycle = (player.walkFrame / 4) * Math.PI * 2;
@@ -598,14 +716,16 @@
     
     const jumpOffset = player.jumpTimer > 0 ? -2 : 0;
     const isJumping = player.jumpTimer > 0;
-    const baseX = px, baseY = py + bodyBob + jumpOffset;
+    const baseX = px;
+    const baseY = py + bodyBob + jumpOffset;
     const torsoBaseY = baseY + ph * 0.42 + bodyHeight;
     
-    // === LEGS ===
-    const legWidth = pw * 0.22, legY = torsoBaseY;
+    const legWidth = pw * 0.22;
+    const legY = torsoBaseY;
     
     if (isJumping || player.crouching) {
-      const leftLegX = baseX + pw * 0.28, rightLegX = baseX + pw * 0.5;
+      const leftLegX = baseX + pw * 0.28;
+      const rightLegX = baseX + pw * 0.5;
       const bentFactor = isJumping ? 0.8 : (1 - crouchAmt * 0.2);
       const displayLegHeight = legHeight * bentFactor;
       
@@ -623,7 +743,8 @@
       ctx.fillRect(leftLegX, legY + displayLegHeight - 3, legWidth, 3);
       ctx.fillRect(rightLegX, legY + displayLegHeight - 3, legWidth, 3);
     } else {
-      const leftLegX = baseX + pw * 0.25, rightLegX = baseX + pw * 0.53;
+      const leftLegX = baseX + pw * 0.25;
+      const rightLegX = baseX + pw * 0.53;
       
       ctx.fillStyle = pantsShadow;
       ctx.fillRect(leftLegX, legY + legSwing, legWidth, legHeight);
@@ -640,7 +761,6 @@
       ctx.fillRect(rightLegX, legY - legSwing + legHeight - 3, legWidth, 3);
     }
     
-    // === BODY ===
     const bodyX = baseX + pw * 0.25 + bendForwardX * 0.6;
     const bodyY = baseY + ph * 0.42 + bendDownY;
     
@@ -653,11 +773,10 @@
     ctx.fillStyle = shirtShadow;
     ctx.fillRect(bodyX + bodyWidth * 0.3, bodyY, bodyWidth * 0.4, 3);
     
-    // === ARMS - POSITIONED OUTSIDE BODY ===
-    const armWidth = pw * 0.16, armHeight = bodyHeight * 0.75;
+    const armWidth = pw * 0.16;
+    const armHeight = bodyHeight * 0.75;
     const shoulderY = bodyY + bodyHeight * 0.15;
     
-    // Back arm - outside body
     const backArmX = player.facingRight ? bodyX - armWidth + 2 : bodyX + bodyWidth - 2;
     const backSwing = isJumping ? -5 : (player.crouching ? 3 : -armSwing);
     
@@ -670,7 +789,6 @@
     ctx.fillStyle = skinColor;
     ctx.fillRect(backArmX + 1, shoulderY + backSwing + armHeight - 4, armWidth - 2, 3);
     
-    // Front arm - outside body
     const frontArmX = player.facingRight ? bodyX + bodyWidth - 2 : bodyX - armWidth + 2;
     const frontSwing = isJumping ? -5 : (player.crouching ? 3 : armSwing);
     
@@ -683,8 +801,8 @@
     ctx.fillStyle = skinColor;
     ctx.fillRect(frontArmX + 1, shoulderY + frontSwing + armHeight - 4, armWidth - 2, 3);
     
-    // === HEAD ===
-    const neckOffsetX = bendForwardX * 0.8, neckOffsetY = bendDownY * 0.5;
+    const neckOffsetX = bendForwardX * 0.8;
+    const neckOffsetY = bendDownY * 0.5;
     const headX = baseX + pw/2 - headSize/2 + neckOffsetX;
     const headY = baseY + ph * 0.05 + neckOffsetY;
     
@@ -695,8 +813,8 @@
     ctx.fillStyle = "rgba(255,255,255,0.15)";
     ctx.fillRect(headX + 2, headY + 2, headSize * 0.4, headSize * 0.4);
     
-    // === FACE ===
-    const eyeSize = Math.max(2, headSize * 0.15), eyeY = headY + headSize * 0.4;
+    const eyeSize = Math.max(2, headSize * 0.15);
+    const eyeY = headY + headSize * 0.4;
     
     if (player.facingRight) {
       const eyeX = headX + headSize * 0.55;
@@ -712,19 +830,19 @@
       ctx.fillRect(eyeX + eyeSize * 0.2, eyeY + eyeSize * 0.2, eyeSize * 0.4, eyeSize * 0.6);
     }
     
-    // Mouth
-    const mouthY = headY + headSize * 0.65, mouthX = headX + headSize * 0.35;
+    const mouthY = headY + headSize * 0.65;
+    const mouthX = headX + headSize * 0.35;
     const mouthWidth = headSize * 0.3;
     ctx.fillStyle = "rgba(0,0,0,0.3)";
     ctx.fillRect(mouthX, mouthY, mouthWidth, isJumping ? 2 : 1);
     
-    // Hair
     ctx.fillStyle = "#3d2817";
     ctx.fillRect(headX, headY, headSize, headSize * 0.25);
   }
 
   // ---------- Input ----------
-  const keys = {}, mouse = { x:0, y:0, left:false, right:false, lastRight:false };
+  const keys = {};
+  const mouse = { x:0, y:0, left:false, right:false, lastRight:false };
 
   window.addEventListener("keydown", e => {
     const key = e.key.toLowerCase();
@@ -799,8 +917,10 @@
   }
 
   function tilesOverlapping(px,py,pw,ph) {
-    const x1 = Math.floor(px / TILE), y1 = Math.floor(py / TILE);
-    const x2 = Math.floor((px + pw - 0.0001) / TILE), y2 = Math.floor((py + ph - 0.0001) / TILE);
+    const x1 = Math.floor(px / TILE);
+    const y1 = Math.floor(py / TILE);
+    const x2 = Math.floor((px + pw - 0.0001) / TILE);
+    const y2 = Math.floor((py + ph - 0.0001) / TILE);
     const out = [];
     for (let tx = x1; tx <= x2; tx++) {
       for (let ty = y1; ty <= y2; ty++) {
@@ -853,7 +973,10 @@
         player.walkFrame = (player.walkFrame + 1) % 4;
         player.walkTimer = 0;
       }
-    } else { player.walkFrame = 0; player.walkTimer = 0; }
+    } else { 
+      player.walkFrame = 0; 
+      player.walkTimer = 0; 
+    }
     
     if (jump && player.onGround) {
       player.vy = JUMP_V;
@@ -864,12 +987,14 @@
     if (player.jumpTimer > 0) player.jumpTimer -= dt;
     player.vy += GRAVITY * dt;
 
-    let moveX = player.vx * dt, moveY = player.vy * dt;
+    let moveX = player.vx * dt;
+    let moveY = player.vy * dt;
     const dist = Math.hypot(moveX, moveY);
     const micro = Math.max(1, Math.ceil(dist / MAX_SUBSTEP));
     
     for (let s=0; s<micro; s++) {
-      const sx = moveX / micro, sy = moveY / micro;
+      const sx = moveX / micro;
+      const sy = moveY / micro;
 
       if (player.crouching && player.onGround && Math.abs(sx) > 0) {
         const direction = sx > 0 ? 1 : -1;
@@ -882,7 +1007,9 @@
         
         if (!blockBelow || !BLOCKS[blockBelow].solid) {
           if (blockAtFeet && BLOCKS[blockAtFeet].solid) {
-            moveX = 0; player.vx = 0; break;
+            moveX = 0; 
+            player.vx = 0; 
+            break;
           }
         }
       }
@@ -895,7 +1022,8 @@
           if (aabbOverlap(player.x, player.y, player.w, player.h, box.x, box.y, box.w, box.h)) {
             if (sx > 0) player.x = box.x - player.w;
             else if (sx < 0) player.x = box.x + box.w;
-            player.vx = 0; break;
+            player.vx = 0; 
+            break;
           }
         }
       }
@@ -908,16 +1036,29 @@
         if (t.id && BLOCKS[t.id].solid) {
           const box = { x: t.tx * TILE, y: t.ty * TILE, w: TILE, h: TILE };
           if (aabbOverlap(player.x, player.y, player.w, player.h, box.x, box.y, box.w, box.h)) {
-            if (sy > 0) { player.y = box.y - player.h; player.vy = 0; player.onGround = true; }
-            else if (sy < 0) { player.y = box.y + box.h; player.vy = 0; }
+            if (sy > 0) { 
+              player.y = box.y - player.h; 
+              player.vy = 0; 
+              player.onGround = true; 
+            }
+            else if (sy < 0) { 
+              player.y = box.y + box.h; 
+              player.vy = 0; 
+            }
             break;
           }
         }
       }
     }
 
-    if (player.x < 0) { player.x = 0; player.vx = 0; }
-    if (player.x + player.w > WORLD_W * TILE) { player.x = WORLD_W * TILE - player.w; player.vx = 0; }
+    if (player.x < 0) { 
+      player.x = 0; 
+      player.vx = 0; 
+    }
+    if (player.x + player.w > WORLD_W * TILE) { 
+      player.x = WORLD_W * TILE - player.w; 
+      player.vx = 0; 
+    }
   }
 
   function checkCollision(x, y, w, h) {
@@ -931,38 +1072,52 @@
     return false;
   }
 
-  // ---------- Game logic ----------
+  // ---------- Mining system ----------
   const mining = { bx:-1, by:-1, progress:0, toolPower:40 };
 
   function gameLogicStep(dt) {
     const cam = getCamera();
-    const mouseLogicalX = mouse.x / currentZoom, mouseLogicalY = mouse.y / currentZoom;
-    const worldX = cam.x + mouseLogicalX, worldY = cam.y + mouseLogicalY;
-    const mbx = Math.floor(worldX / TILE), mby = Math.floor(worldY / TILE);
-    const pcx = player.x + player.w/2, pcy = player.y + player.h/2;
+    const mouseLogicalX = mouse.x / currentZoom;
+    const mouseLogicalY = mouse.y / currentZoom;
+    const worldX = cam.x + mouseLogicalX;
+    const worldY = cam.y + mouseLogicalY;
+    const mbx = Math.floor(worldX / TILE);
+    const mby = Math.floor(worldY / TILE);
+    const pcx = player.x + player.w/2;
+    const pcy = player.y + player.h/2;
     const distTiles = Math.hypot((mbx+0.5)*TILE - pcx, (mby+0.5)*TILE - pcy) / TILE;
     const inReach = distTiles <= REACH_TILES;
 
     if (mouse.left && inReach && mbx>=0 && mbx < WORLD_W && mby>=0 && mby < WORLD_H && tileAt(mbx,mby) !== 0) {
-      const id = tileAt(mbx, mby), hp = BLOCKS[id].hp;
+      const id = tileAt(mbx, mby);
+      const hp = BLOCKS[id].hp;
       if (mining.bx !== mbx || mining.by !== mby) {
-        mining.bx = mbx; mining.by = mby; mining.progress = 0;
+        mining.bx = mbx; 
+        mining.by = mby; 
+        mining.progress = 0;
       } else {
         mining.progress += mining.toolPower * dt;
         if (mining.progress >= hp) {
           const drop = BLOCKS[id].drop || id;
           addToInventory(drop, 1);
           map[idx(mbx, mby)] = 0;
-          mining.bx = mining.by = -1; mining.progress = 0;
+          mining.bx = -1;
+          mining.by = -1;
+          mining.progress = 0;
         }
       }
     } else {
-      if (!mouse.left) { mining.progress = 0; mining.bx = mining.by = -1; }
+      if (!mouse.left) { 
+        mining.progress = 0; 
+        mining.bx = -1;
+        mining.by = -1;
+      }
     }
 
     if (mouse.right && !mouse.lastRight) {
       if (inReach && mbx>=0 && mbx < WORLD_W && mby>=0 && mby < WORLD_H && tileAt(mbx, mby) === 0) {
-        const tilePx = mbx * TILE, tilePy = mby * TILE;
+        const tilePx = mbx * TILE;
+        const tilePy = mby * TILE;
         if (!aabbOverlap(player.x, player.y, player.w, player.h, tilePx, tilePy, TILE, TILE)) {
           const sel = player.selected;
           if (totalCount(sel) > 0) { map[idx(mbx, mby)] = sel; removeFromInventory(sel, 1); }
@@ -972,18 +1127,39 @@
     mouse.lastRight = mouse.right;
   }
 
+  // ---------- Utility function for rounded rectangles ----------
+  function roundRect(ctx, x, y, w, h, r, fill, stroke) {
+    if (w < 2*r) r = w/2;
+    if (h < 2*r) r = h/2;
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+    if (fill) ctx.fill();
+    if (stroke) ctx.stroke();
+  }
+
   // ---------- Day/night system ----------
   function getTimeLight() {
     const elapsed = (Date.now() - worldStartTime) % CYCLE_MS;
-    const t = elapsed / CYCLE_MS, angle = t * Math.PI * 2;
+    const t = elapsed / CYCLE_MS;
+    const angle = t * Math.PI * 2;
     const raw = (Math.sin(angle - Math.PI/2) + 1) / 2;
     return { t, angle, light: Math.max(0.02, raw) };
   }
 
   function lerpColor(a, b, f) {
-    const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
-    const ar = pa >> 16, ag = (pa >> 8) & 0xff, ab = pa & 0xff;
-    const br = pb >> 16, bg = (pb >> 8) & 0xff, bb = pb & 0xff;
+    const pa = parseInt(a.slice(1), 16);
+    const pb = parseInt(b.slice(1), 16);
+    const ar = pa >> 16;
+    const ag = (pa >> 8) & 0xff;
+    const ab = pa & 0xff;
+    const br = pb >> 16;
+    const bg = (pb >> 8) & 0xff;
+    const bb = pb & 0xff;
     const rr = Math.round(ar + (br - ar) * f);
     const rg = Math.round(ag + (bg - ag) * f);
     const rb = Math.round(ab + (bb - ab) * f);
@@ -993,13 +1169,15 @@
   function getClockLabel() {
     const now = Date.now();
     const cyc = ((now - worldStartTime) % CYCLE_MS) / CYCLE_MS;
-    const hour = Math.floor(cyc * 24), min = Math.floor((cyc * 24 - hour) * 60);
+    const hour = Math.floor(cyc * 24);
+    const min = Math.floor((cyc * 24 - hour) * 60);
     return `${String(hour).padStart(2,'0')}:${String(min).padStart(2,'0')}`;
   }
 
   // ---------- Camera ----------
   function getLogicalViewSize() {
-    const cssW = Math.max(800, window.innerWidth), cssH = Math.max(600, window.innerHeight);
+    const cssW = Math.max(800, window.innerWidth);
+    const cssH = Math.max(600, window.innerHeight);
     return { viewW: cssW / currentZoom, viewH: cssH / currentZoom, cssW, cssH };
   }
 
@@ -1007,7 +1185,8 @@
     const { viewW, viewH } = getLogicalViewSize();
     const cx = Math.round(player.x + player.w/2 - viewW/2);
     const cy = Math.round(player.y + player.h/2 - viewH/2);
-    const maxX = WORLD_W * TILE - viewW, maxY = WORLD_H * TILE - viewH;
+    const maxX = WORLD_W * TILE - viewW;
+    const maxY = WORLD_H * TILE - viewH;
     return { x: Math.max(0, Math.min(maxX, cx)), y: Math.max(0, Math.min(maxY, cy)), w: viewW, h: viewH };
   }
 
@@ -1027,17 +1206,22 @@
   }
 
   function renderBackground() {
-    const cssW = Math.max(800, window.innerWidth), cssH = Math.max(600, window.innerHeight);
+    const cssW = Math.max(800, window.innerWidth);
+    const cssH = Math.max(600, window.innerHeight);
     bgCanvas.width = Math.floor(cssW * devicePixelRatio_);
     bgCanvas.height = Math.floor(cssH * devicePixelRatio_);
-    bgCanvas.style.width = cssW + "px"; bgCanvas.style.height = cssH + "px";
+    bgCanvas.style.width = cssW + "px";
+    bgCanvas.style.height = cssH + "px";
     bgCtx.setTransform(1, 0, 0, 1, 0, 0);
     bgCtx.imageSmoothingEnabled = false;
 
-    const { angle, light } = getTimeLight();
-    const dayTop = "#71BCE1", dayBot = "#DDEFF7";
-    const duskTop = "#FFB96C", duskBot = "#F6CB69";
-    const nightTop = "#081023", nightBot = "#02020a";
+    const { light, angle } = getTimeLight();
+    const dayTop = "#71BCE1";
+    const dayBot = "#DDEFF7";
+    const duskTop = "#FFB96C";
+    const duskBot = "#F6CB69";
+    const nightTop = "#081023";
+    const nightBot = "#02020a";
     
     let topColor, botColor;
     if (light >= 0.6) {
@@ -1098,7 +1282,9 @@
         const baseA = Math.min(1, starAlphaBase * (0.8 + 0.8 * (1 - s.depth)));
         const a = Math.min(1, baseA * tw * s.brightness);
         const ci = parseInt(s.color.slice(1), 16);
-        const cr = (ci >> 16) & 0xff, cg = (ci >> 8) & 0xff, cb = ci & 0xff;
+        const cr = (ci >> 16) & 0xff;
+        const cg = (ci >> 8) & 0xff;
+        const cb = ci & 0xff;
         bgCtx.fillStyle = `rgba(${cr},${cg},${cb},${a})`;
         const size = Math.max(1, Math.round(s.size * (1 + (1 - s.depth)))) * devicePixelRatio_;
         bgCtx.fillRect(s.x * devicePixelRatio_, s.y * devicePixelRatio_, Math.max(1, size), Math.max(1, size));
@@ -1111,15 +1297,19 @@
     }
   }
 
-  let frameCount = 0, fps = 0, fpsLast = performance.now();
+  let frameCount = 0;
+  let fps = 0;
+  let fpsLast = performance.now();
 
   function renderWorld() {
     currentZoom += (targetZoom - currentZoom) * 0.12;
-    const cssW = Math.max(800, window.innerWidth), cssH = Math.max(600, window.innerHeight);
+    const cssW = Math.max(800, window.innerWidth);
+    const cssH = Math.max(600, window.innerHeight);
     const dpr = devicePixelRatio_;
     worldCanvas.width = Math.floor(cssW * dpr);
     worldCanvas.height = Math.floor(cssH * dpr);
-    worldCanvas.style.width = cssW + "px"; worldCanvas.style.height = cssH + "px";
+    worldCanvas.style.width = cssW + "px";
+    worldCanvas.style.height = cssH + "px";
     wctx.setTransform(dpr * currentZoom, 0, 0, dpr * currentZoom, 0, 0);
     wctx.imageSmoothingEnabled = false;
 
@@ -1127,9 +1317,12 @@
     wctx.clearRect(0, 0, viewW, viewH);
 
     const cam = getCamera();
-    const startX = Math.floor(cam.x / TILE) - 1, endX = Math.ceil((cam.x + cam.w) / TILE) + 1;
-    const startY = Math.floor(cam.y / TILE) - 1, endY = Math.ceil((cam.y + cam.h) / TILE) + 1;
-    const light = getTimeLight().light, ambientDark = 1 - light;
+    const startX = Math.floor(cam.x / TILE) - 1;
+    const endX = Math.ceil((cam.x + cam.w) / TILE) + 1;
+    const startY = Math.floor(cam.y / TILE) - 1;
+    const endY = Math.ceil((cam.y + cam.h) / TILE) + 1;
+    const light = getTimeLight().light;
+    const ambientDark = 1 - light;
     
     for (let ty = startY; ty <= endY; ty++) {
       if (ty < 0 || ty >= WORLD_H) continue;
@@ -1137,38 +1330,51 @@
         if (tx < 0 || tx >= WORLD_W) continue;
         const id = tileAt(tx, ty);
         if (!id) continue;
-        const bx = tx * TILE - cam.x, by = ty * TILE - cam.y;
-        const def = BLOCKS[id], baseCol = def && def.color ? def.color : "#fff";
+        const bx = tx * TILE - cam.x;
+        const by = ty * TILE - cam.y;
+        const def = BLOCKS[id];
+        const baseCol = def && def.color ? def.color : "#fff";
         let ci = 0xffffff;
         try { ci = parseInt(baseCol.slice(1), 16); } catch(e) {}
-        const br = (ci >> 16) & 0xff, bg = (ci >> 8) & 0xff, bb = ci & 0xff;
+        const br = (ci >> 16) & 0xff;
+        const bg = (ci >> 8) & 0xff;
+        const bb = ci & 0xff;
         const darkFactor = 1 - ambientDark * 0.5;
-        const rr = Math.round(br * darkFactor), rg = Math.round(bg * darkFactor), rb = Math.round(bb * darkFactor);
+        const rr = Math.round(br * darkFactor);
+        const rg = Math.round(bg * darkFactor);
+        const rb = Math.round(bb * darkFactor);
         wctx.fillStyle = `rgb(${rr},${rg},${rb})`;
         wctx.fillRect(bx, by, TILE, TILE);
         drawTile(wctx, id, bx, by, darkFactor);
       }
     }
 
-    const px = player.x - cam.x, py = player.y - cam.y;
+    const px = player.x - cam.x;
+    const py = player.y - cam.y;
     drawPlayerSprite(wctx, px, py, player.w, player.h);
 
-    const mouseLogicalX = mouse.x / currentZoom, mouseLogicalY = mouse.y / currentZoom;
-    const worldX = cam.x + mouseLogicalX, worldY = cam.y + mouseLogicalY;
-    const mbx = Math.floor(worldX / TILE), mby = Math.floor(worldY / TILE);
-    const pcx = player.x + player.w/2, pcy = player.y + player.h/2;
+    const mouseLogicalX = mouse.x / currentZoom;
+    const mouseLogicalY = mouse.y / currentZoom;
+    const worldX = cam.x + mouseLogicalX;
+    const worldY = cam.y + mouseLogicalY;
+    const mbx = Math.floor(worldX / TILE);
+    const mby = Math.floor(worldY / TILE);
+    const pcx = player.x + player.w/2;
+    const pcy = player.y + player.h/2;
     const distT = Math.hypot((mbx+0.5)*TILE - pcx, (mby+0.5)*TILE - pcy) / TILE;
     const reach = distT <= REACH_TILES && mby >= 0 && mby < WORLD_H;
     
     if (mbx >= 0 && mby >= 0 && mby < WORLD_H) {
-      const tx = mbx * TILE - cam.x, ty = mby * TILE - cam.y;
+      const tx = mbx * TILE - cam.x;
+      const ty = mby * TILE - cam.y;
       wctx.lineWidth = 2;
       wctx.strokeStyle = reach ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.25)";
       wctx.strokeRect(tx + 1, ty + 1, TILE - 2, TILE - 2);
     }
 
     if (mining.bx >= 0 && mining.by >= 0) {
-      const tx = mining.bx * TILE - cam.x, ty = mining.by * TILE - cam.y;
+      const tx = mining.bx * TILE - cam.x;
+      const ty = mining.by * TILE - cam.y;
       const bid = tileAt(mining.bx, mining.by);
       const hp = (BLOCKS[bid] && BLOCKS[bid].hp) || 1;
       const frac = Math.min(1, mining.progress / Math.max(1, hp));
@@ -1181,24 +1387,31 @@
 
   function renderHUD() {
     renderBackground();
-    const cssW = Math.max(800, window.innerWidth), cssH = Math.max(600, window.innerHeight);
+    const cssW = Math.max(800, window.innerWidth);
+    const cssH = Math.max(600, window.innerHeight);
     overlay.width = Math.floor(cssW * devicePixelRatio_);
     overlay.height = Math.floor(cssH * devicePixelRatio_);
-    overlay.style.width = cssW + "px"; overlay.style.height = cssH + "px";
+    overlay.style.width = cssW + "px";
+    overlay.style.height = cssH + "px";
     octx.setTransform(1, 0, 0, 1, 0, 0);
     octx.imageSmoothingEnabled = false;
 
     const now = performance.now();
     frameCount++;
-    if (now - fpsLast >= 1000) { fps = frameCount; frameCount = 0; fpsLast = now; }
+    if (now - fpsLast >= 1000) { 
+      fps = frameCount; 
+      frameCount = 0; 
+      fpsLast = now; 
+    }
     
     octx.font = `bold ${24*devicePixelRatio_}px Arial, Helvetica, sans-serif`;
-    octx.fillStyle = "rgba(0,0,0,0.7)";
     octx.textAlign = "center";
     const timeText = getClockLabel();
-    const timeX = (cssW / 2) * devicePixelRatio_, timeY = 40 * devicePixelRatio_;
+    const timeX = (cssW / 2) * devicePixelRatio_;
+    const timeY = 40 * devicePixelRatio_;
     const timeMetrics = octx.measureText(timeText);
     const timePadding = 12 * devicePixelRatio_;
+    octx.fillStyle = "rgba(0,0,0,0.7)";
     roundRect(octx, timeX - (timeMetrics.width / 2) - timePadding, timeY - 20 * devicePixelRatio_, 
       timeMetrics.width + timePadding * 2, 32 * devicePixelRatio_, 8 * devicePixelRatio_, true, false);
     octx.fillStyle = "#fff";
@@ -1220,16 +1433,20 @@
 
     const visibleIds = Object.keys(inventory).map(Number).filter(id => id !== 0 && inventory[id] && inventory[id].length > 0).sort((a,b) => a-b);
     const slotCount = Math.max(visibleIds.length, 1);
-    const slotSize = TILE, padding = 8, spacing = 6;
+    const slotSize = TILE;
+    const padding = 8;
+    const spacing = 6;
     const barW = Math.max(220, padding*2 + slotCount*slotSize + (slotCount-1)*spacing);
     const barH = slotSize + padding*2;
-    const bx0 = Math.round((cssW - barW)/2), by0 = cssH - barH - 18;
+    const bx0 = Math.round((cssW - barW)/2);
+    const by0 = cssH - barH - 18;
     octx.fillStyle = "rgba(0,0,0,0.5)";
     roundRect(octx, bx0*devicePixelRatio_, by0*devicePixelRatio_, barW*devicePixelRatio_, barH*devicePixelRatio_, 8*devicePixelRatio_, true, false);
 
     for (let i=0; i<visibleIds.length; i++) {
       const id = visibleIds[i];
-      const sx = bx0 + padding + i*(slotSize + spacing), sy = by0 + padding;
+      const sx = bx0 + padding + i*(slotSize + spacing);
+      const sy = by0 + padding;
       octx.fillStyle = BLOCKS[id] && BLOCKS[id].color || "#333";
       octx.fillRect(sx*devicePixelRatio_, sy*devicePixelRatio_, slotSize*devicePixelRatio_, slotSize*devicePixelRatio_);
       const tex = texCache.get(id);
@@ -1237,7 +1454,8 @@
       octx.lineWidth = (player.selected === id) ? 3*devicePixelRatio_ : 1*devicePixelRatio_;
       octx.strokeStyle = (player.selected === id) ? "#fff" : "rgba(0,0,0,0.2)";
       octx.strokeRect((sx - ((player.selected === id)?3:0))*devicePixelRatio_, (sy - ((player.selected === id)?3:0))*devicePixelRatio_, (slotSize + ((player.selected === id)?6:0))*devicePixelRatio_, (slotSize + ((player.selected === id)?6:0))*devicePixelRatio_);
-      const mxc = mouse.x, myc = mouse.y;
+      const mxc = mouse.x;
+      const myc = mouse.y;
       const inside = (mxc >= sx && mxc <= sx + slotSize && myc >= sy && myc <= sy + slotSize);
       octx.fillStyle = "#fff";
       octx.font = `${12*devicePixelRatio_}px monospace`;
@@ -1245,7 +1463,8 @@
       if (inside) {
         const name = BLOCKS[id].name;
         const textW = octx.measureText(name).width;
-        const tx = sx + slotSize/2 - (textW / devicePixelRatio_) / 2, ty = sy - 14;
+        const tx = sx + slotSize/2 - (textW / devicePixelRatio_) / 2;
+        const ty = sy - 14;
         octx.fillStyle = "rgba(0,0,0,0.75)";
         roundRect(octx, (tx - 6)*devicePixelRatio_, (ty - 12)*devicePixelRatio_, (textW + 12)*devicePixelRatio_, 16*devicePixelRatio_, 6*devicePixelRatio_, true, false);
         octx.fillStyle = "#fff";
@@ -1256,21 +1475,9 @@
     }
   }
 
-  function roundRect(ctx, x, y, w, h, r, fill, stroke) {
-    if (w < 2*r) r = w/2;
-    if (h < 2*r) r = h/2;
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.arcTo(x + w, y, x + w, y + h, r);
-    ctx.arcTo(x + w, y + h, x, y + h, r);
-    ctx.arcTo(x, y + h, x, y, r);
-    ctx.arcTo(x, y, x + w, y, r);
-    ctx.closePath();
-    if (fill) ctx.fill();
-    if (stroke) ctx.stroke();
-  }
-
-  let running = true, accumulator = 0, last = performance.now();
+  let running = true;
+  let accumulator = 0;
+  let last = performance.now();
 
   function frame(now) {
     if (!running) return;
@@ -1301,10 +1508,14 @@
   requestAnimationFrame(frame);
 
   function resizeAll() {
-    const cssW = Math.max(800, window.innerWidth), cssH = Math.max(600, window.innerHeight);
-    worldCanvas.style.width = cssW + "px"; worldCanvas.style.height = cssH + "px";
-    bgCanvas.style.width = cssW + "px"; bgCanvas.style.height = cssH + "px";
-    overlay.style.width = cssW + "px"; overlay.style.height = cssH + "px";
+    const cssW = Math.max(800, window.innerWidth);
+    const cssH = Math.max(600, window.innerHeight);
+    worldCanvas.style.width = cssW + "px";
+    worldCanvas.style.height = cssH + "px";
+    bgCanvas.style.width = cssW + "px";
+    bgCanvas.style.height = cssH + "px";
+    overlay.style.width = cssW + "px";
+    overlay.style.height = cssH + "px";
     buildAllTextures();
     generateStars(Math.max(200, Math.floor(cssW * cssH / 30000)));
   }
@@ -1329,9 +1540,9 @@
     addToInventory, removeFromInventory, totalCount, BLOCKS
   };
 
-  console.log("Mini-craft with smooth terrain and hills running!");
-  console.log("Arms are now positioned OUTSIDE the player body!");
+  console.log("Mini-craft with ores running! ✨");
+  console.log("Ores added: Coal, Iron, Copper, Emerald, Diamond");
+  console.log("Dig deep to find rare ores!");
   console.log("Press ESC during gameplay to return to menu.");
   console.log("Call window.miniCraftFixed.destroy() to remove the game.");
 })();
-
